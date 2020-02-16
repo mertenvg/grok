@@ -4,13 +4,13 @@ Tired of debugging using the same old `fmt.Println` and `fmt.Printf("%+v", var)`
 
 ## Install:
 ```sh
-go get github.com/bookerzzz/grok
+go get github.com/mertenvg/grok
 ```
 
 ## Usage:
 
 ```go
-import "github.com/bookerzzz/grok"
+import "github.com/mertenvg/grok"
 
 fake := "News"
 
@@ -46,4 +46,4 @@ func WithTabStop(chars int) Option
 
 ## Got 99 problems and this code is one?
 
-Please create an [issue](https://github.com/bookerzzz/grok/issues)
+Please create an [issue](https://github.com/mertenvg/grok/issues)
