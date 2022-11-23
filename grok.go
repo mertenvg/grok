@@ -25,7 +25,7 @@ var (
 	}
 )
 
-type Writer func(string, ...interface{})
+type Writer func(string, ...any)
 
 type Indenter func(string, int) string
 
@@ -43,7 +43,7 @@ type Conf struct {
 }
 
 func writer(w io.Writer) Writer {
-	return Writer(func(format string, params ...interface{}) {
+	return Writer(func(format string, params ...any) {
 		w.Write([]byte(fmt.Sprintf(format, params...)))
 	})
 }

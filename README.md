@@ -1,24 +1,20 @@
 # Grok it like you mean it!
 
-Tired of debugging using the same old `fmt.Println` and `fmt.Printf("%+v", var)`. Enter `grok`! A new package to help you grok your own code.
+Tired of debugging using `fmt.Println` and `fmt.Printf("%+v", var)`. Use `grok` to print out a pretty formatted view of your variables and what's in them.
 
 ## Install:
 ```sh
-go get github.com/mertenvg/grok
+go get github.com/mertenvg/grok@latest
 ```
 
 ## Usage:
 
 ```go
-import "github.com/mertenvg/grok"
-
-fake := "News"
-
-grok.Value(fake) // or grok.V(fake)
+grok.V(myVar) // or grok.Value(myVar)
 
 // or for customised output
 
-grok.Value(fake, ...grok.Option)
+grok.V(myVar, grok.WithMaxDepth(3), grok.WithTabStop(2))
 ```
 
 The grok package comes with the following customisation options baked in:
@@ -42,6 +38,14 @@ func WithMaxLength(chars int) Option
 ```go
 // WithTabStop sets the width of a tabstop to the given char count. Defaults to `4`
 func WithTabStop(chars int) Option
+```
+
+## Abbreviated types
+The following go types have their output abbreviated when nested within other structs. To see their un-abbreviated content simply grok.V that specific value.
+```go
+time.Time
+http.Request
+http.Response
 ```
 
 ## Got 99 problems and this code is one?
