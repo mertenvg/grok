@@ -3,6 +3,7 @@ package grok
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"sync"
@@ -20,17 +21,17 @@ type value struct {
 	Type        string
 	RValue      reflect.Value
 	RType       reflect.Type
-	Elem        interface{}
+	Elem        any
 	Children    []value
 }
 
 // V aliases Value
-func V(value interface{}, options ...Option) {
+func V(value any, options ...Option) {
 	Value(value, options...)
 }
 
 // Value prints a more human readable representation of any value
-func Value(value interface{}, options ...Option) {
+func Value(value any, options ...Option) {
 	c := defaults
 	for _, o := range options {
 		o(&c)
@@ -67,7 +68,7 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 	switch t.Kind() {
 	case reflect.Interface:
 		name := t.Name()
-		tn = colour("interface{}", colourBlue) + colour(name, colourBlue)
+		tn = colour("any", colourBlue) + colour(name, colourBlue)
 		if !v.IsNil() {
 			v = v.Elem()
 			t = v.Type()
@@ -77,53 +78,53 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			t = v.Type()
 		}
 		if t.Name() != name {
-			tn = colour(t.Name(), colourBlue) + colour(" as ", colourRed) + tn
+			tn = colour(t.String(), colourBlue) + colour(" as ", colourRed) + tn
 		}
 	case reflect.Ptr:
 		v = v.Elem()
 		t = t.Elem()
-		tn = colour("*", colourRed) + colour(t.Name(), colourBlue)
+		tn = colour("*", colourRed) + colour(t.String(), colourBlue)
 	case reflect.Slice:
 		tn = colour("[]", colourRed)
 		switch t.Elem().Kind() {
 		case reflect.Interface:
-			tn = tn + colour(t.Elem().Name(), colourBlue)
+			tn = tn + colour(t.Elem().String(), colourBlue)
 		case reflect.Ptr:
 			tn = tn + colour("*", colourRed)
-			tn = tn + colour(t.Elem().Elem().Name(), colourBlue)
+			tn = tn + colour(t.Elem().Elem().String(), colourBlue)
 		default:
-			tn = tn + colour(t.Elem().Name(), colourBlue)
+			tn = tn + colour(t.Elem().String(), colourBlue)
 		}
 	case reflect.Map:
 		tn = colour("map[", colourRed)
 		switch t.Key().Kind() {
 		case reflect.Interface:
-			tn = tn + colour(t.Key().Name(), colourBlue)
+			tn = tn + colour(t.Key().String(), colourBlue)
 		case reflect.Ptr:
 			tn = tn + colour("*", colourRed)
-			tn = tn + colour(t.Key().Elem().Name(), colourBlue)
+			tn = tn + colour(t.Key().Elem().String(), colourBlue)
 		default:
-			tn = tn + colour(t.Key().Name(), colourBlue)
+			tn = tn + colour(t.Key().String(), colourBlue)
 		}
 		tn = tn + colour("]", colourRed)
 		switch t.Elem().Kind() {
 		case reflect.Interface:
-			tn = tn + colour("interface{}", colourBlue)
+			tn = tn + colour("any", colourBlue)
 		case reflect.Ptr:
 			tn = tn + colour("*", colourRed)
-			tn = tn + colour(t.Elem().Elem().Name(), colourBlue)
+			tn = tn + colour(t.Elem().Elem().String(), colourBlue)
 		default:
-			tn = tn + colour(t.Elem().Name(), colourBlue)
+			tn = tn + colour(t.Elem().String(), colourBlue)
 		}
 	case reflect.Chan:
 		tn = colour(t.ChanDir().String(), colourRed)
-		tn = tn + " " + colour(t.Elem().Name(), colourBlue)
+		tn = tn + " " + colour(t.Elem().String(), colourBlue)
 	case reflect.Func:
 		tn = colour("func", colourRed)
 	case reflect.UnsafePointer:
-		tn = colour("unsafe*", colourRed) + colour(t.Name(), colourBlue)
+		tn = colour("unsafe*", colourRed) + colour(t.String(), colourBlue)
 	default:
-		tn = colour(t.Name(), colourBlue)
+		tn = colour(t.String(), colourBlue)
 	}
 
 	if len(name) > 0 {
@@ -235,9 +236,21 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 		if maxDepth > 0 && depth >= maxDepth {
 			write(indent(colour("... max depth reached\n", colourGrey), depth))
 		} else {
-			for i := 0; i < v.NumField(); i++ {
-				dump(t.Field(i).Name, v.Field(i), write, colour, indent, depth, maxDepth, maxLength)
+			switch {
+			case depth > 1 && t.String() == "time.Time":
+				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), depth))
+			case depth > 1 && t.String() == "http.Request":
+				o := v.Interface().(http.Request)
+				write(indent(colour(fmt.Sprintf("... %s %s %d\n", coalesce(o.Method, "GET"), coalesce(o.RequestURI, "<request-uri>"), o.ContentLength), colourGrey), depth))
+			case depth > 1 && t.String() == "http.Response":
+				o := v.Interface().(http.Response)
+				write(indent(colour(fmt.Sprintf("... %s %d\n", coalesce(o.Status, "<status-code> <status>"), o.ContentLength), colourGrey), depth))
+			default:
+				for i := 0; i < v.NumField(); i++ {
+					dump(t.Field(i).Name, v.Field(i), write, colour, indent, depth, maxDepth, maxLength)
+				}
 			}
+
 		}
 		depth = depth - 1
 		write(indent("}", depth))
@@ -272,4 +285,14 @@ func (s byValue) Swap(i, j int) {
 // Less implements sort.Interface
 func (s byValue) Less(i, j int) bool {
 	return fmt.Sprintf("%v", s[i]) < fmt.Sprintf("%v", s[j])
+}
+
+// coalesce returns the first non-empty value from the given arguments
+func coalesce(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
