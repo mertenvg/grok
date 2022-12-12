@@ -241,7 +241,11 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			case depth > 1 && t.String() == "time.Time":
 				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), depth))
 			case depth > 1 && t.String() == "time.Location":
-				write(indent(colour(fmt.Sprintf("... %v\n", v.Addr().Interface().(*time.Location).String()), colourGrey), depth))
+				s := "<nil>"
+				if v.CanAddr() && v.CanInterface() {
+					s = v.Addr().Interface().(*time.Location).String()
+				}
+				write(indent(colour(fmt.Sprintf("... %v\n", s), colourGrey), depth))
 			case depth > 1 && t.String() == "http.Request":
 				o := v.Interface().(http.Request)
 				write(indent(colour(fmt.Sprintf("... %s %s %d\n", coalesce(o.Method, "GET"), coalesce(o.RequestURI, "<request-uri>"), o.ContentLength), colourGrey), depth))
