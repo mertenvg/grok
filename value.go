@@ -11,8 +11,13 @@ import (
 )
 
 var (
-	dumpMutex = sync.Mutex{}
+	dumpMutex   = sync.Mutex{}
+	grokkerType = reflect.TypeOf((*Grokker)(nil)).Elem()
 )
+
+type Grokker interface {
+	Grok() string
+}
 
 type value struct {
 	Name        string
@@ -238,6 +243,9 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			write(indent(colour("... max depth reached\n", colourGrey), depth))
 		} else {
 			switch {
+			case v.Type().Implements(grokkerType):
+				o := v.Interface().(Grokker)
+				write(indent(colour(fmt.Sprintf("... %s\n", o.Grok()), colourGrey), depth))
 			case depth > 1 && t.String() == "time.Time":
 				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), depth))
 			case depth > 1 && t.String() == "time.Location":
