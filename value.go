@@ -2,6 +2,7 @@ package grok
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -54,7 +55,7 @@ func Value(value any, options ...Option) {
 	dump("value", reflect.ValueOf(value), writer(&b), colourizer(c.colour), indenter(c.tabstop), c.depth, c.maxDepth, c.maxLength)
 
 	// Write the contents of the buffer to the configured writer.
-	c.writer.Write(b.Bytes())
+	_, _ = c.writer.Write(b.Bytes())
 }
 
 func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent Indenter, depth, maxDepth, maxLength int) {
@@ -248,6 +249,9 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			case v.Type().Implements(grokkerType):
 				o := v.Interface().(Grokker)
 				write(indent(colour(fmt.Sprintf("... %s\n", o.Grok()), colourGrey), depth))
+			case t.String() == "json.RawMessage":
+				o := v.Interface().(json.RawMessage)
+				write(indent(colour(fmt.Sprintf("... %s\n", string(o)), colourGrey), depth))
 			case depth > 1 && t.String() == "time.Time":
 				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), depth))
 			case depth > 1 && t.String() == "time.Location":
