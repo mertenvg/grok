@@ -52,7 +52,10 @@ func Value(value any, options ...Option) {
 	}
 
 	// Write the contents of the buffer to the configured writer.
-	_, _ = c.writer.Write(b.Bytes())
+	_, err := c.writer.Write(b.Bytes())
+	if err != nil && c.errorHandler != nil {
+		c.errorHandler(fmt.Errorf("write error: %w", err))
+	}
 }
 
 // S returns the formatted output as a string
@@ -134,20 +137,18 @@ func formatTypeName(t reflect.Type, v reflect.Value, colour Colourizer) string {
 		name := t.Name()
 		tn = colour("any", colourBlue) + colour(name, colourBlue)
 		if !v.IsNil() {
-			v = v.Elem()
-			t = v.Type()
-		}
-		if t.Kind() == reflect.Ptr {
-			v = v.Elem()
-			t = v.Type()
-		}
-		if t.Name() != name {
-			tn = colour(t.String(), colourBlue) + colour(" as ", colourRed) + tn
+			newV := v.Elem()
+			newT := newV.Type()
+			if newT.Kind() == reflect.Ptr {
+				newV = newV.Elem()
+				newT = newV.Type()
+			}
+			if newT.Name() != name {
+				tn = colour(newT.String(), colourBlue) + colour(" as ", colourRed) + tn
+			}
 		}
 	case reflect.Ptr:
-		v = v.Elem()
-		t = t.Elem()
-		tn = colour("*", colourRed) + colour(t.String(), colourBlue)
+		tn = colour("*", colourRed) + colour(t.Elem().String(), colourBlue)
 	case reflect.Slice:
 		tn = colour("[]", colourRed)
 		switch t.Elem().Kind() {
@@ -195,6 +196,14 @@ func formatTypeName(t reflect.Type, v reflect.Value, colour Colourizer) string {
 
 func formatValue(v reflect.Value, t reflect.Type, name string, write Writer, colour Colourizer, indent Indenter, c *Conf) {
 	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			write(colour("<nil>", colourGrey))
+		} else {
+			// Dereference and continue dumping
+			dump("", v.Elem(), write, colour, indent, c)
+			return
+		}
 	case reflect.Bool:
 		write(colour("%v", colourGreen), v.Bool())
 	case reflect.Uintptr:
