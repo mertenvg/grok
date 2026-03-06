@@ -7,12 +7,10 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
-	"sync"
 	"time"
 )
 
 var (
-	dumpMutex   = sync.Mutex{}
 	grokkerType = reflect.TypeOf((*Grokker)(nil)).Elem()
 )
 
@@ -39,38 +37,116 @@ func V(value any, options ...Option) {
 
 // Value prints a more human readable representation of any value
 func Value(value any, options ...Option) {
-	c := defaults
+	c := getDefaults()
 	for _, o := range options {
 		o(&c)
 	}
 
-	// only dump one value at a time to avoid overlap
-	dumpMutex.Lock()
-	defer dumpMutex.Unlock()
+	// Get a mutex specific to this writer to allow concurrent dumps to different writers
+	mutex := getMutexForWriter(c.writer)
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	// create a buffer for our output to make it concurrency safe.
 	var b bytes.Buffer
 
+	// Add prefix if configured
+	if c.prefix != "" {
+		b.WriteString(c.prefix)
+	}
+
 	// dump it like you mean it
-	dump("value", reflect.ValueOf(value), writer(&b), colourizer(c.colour), indenter(c.tabstop), c.depth, c.maxDepth, c.maxLength)
+	dump("value", reflect.ValueOf(value), writer(&b, c.errorHandler), colourizer(c.colour), indenter(c.tabstop), &c)
+
+	// Add suffix if configured
+	if c.suffix != "" {
+		b.WriteString(c.suffix)
+	}
 
 	// Write the contents of the buffer to the configured writer.
 	_, _ = c.writer.Write(b.Bytes())
 }
 
-func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent Indenter, depth, maxDepth, maxLength int) {
+// S returns the formatted output as a string
+func S(value any, options ...Option) string {
+	var b bytes.Buffer
+	options = append(options, WithWriter(&b))
+	Value(value, options...)
+	return b.String()
+}
+
+// B returns the formatted output as bytes
+func B(value any, options ...Option) []byte {
+	var b bytes.Buffer
+	options = append(options, WithWriter(&b))
+	Value(value, options...)
+	return b.Bytes()
+}
+
+func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent Indenter, c *Conf) {
+	// Check context cancellation
+	if c.ctx != nil {
+		select {
+		case <-c.ctx.Done():
+			write(indent(colour("... context cancelled\n", colourGrey), c.depth))
+			return
+		default:
+		}
+	}
+
+	// Check filter
+	if c.filter != nil && !c.filter(name, v) {
+		return
+	}
+
+	// Collect stats
+	if c.collectStats && c.stats != nil {
+		c.stats.FieldsTraversed++
+		if c.depth > c.stats.MaxDepthReached {
+			c.stats.MaxDepthReached = c.depth
+		}
+	}
+
+	// Recover from panics during reflection
+	defer func() {
+		if r := recover(); r != nil {
+			if c.errorHandler != nil {
+				c.errorHandler(fmt.Errorf("panic during reflection: %v", r))
+			}
+			write(indent(colour(fmt.Sprintf("... panic: %v\n", r), colourRed), c.depth))
+		}
+	}()
+
 	val := value{
 		Name:   name,
 		RValue: v,
 	}
+	_ = val // suppress unused warning
 
 	if !v.IsValid() {
 		val.Elem = "<invalid>"
-		write(indent("<invalid>\n", depth))
+		write(indent("<invalid>\n", c.depth))
 		return
 	}
 	t := v.Type()
 
+	// Collect type statistics
+	if c.collectStats && c.stats != nil {
+		c.stats.TypesSeen[t.String()]++
+	}
+
+	tn := formatTypeName(t, v, colour)
+
+	if len(name) > 0 {
+		write(indent("%s %s = ", c.depth), colour(name, colourYellow), tn)
+	} else {
+		write(indent("", c.depth))
+	}
+
+	formatValue(v, t, name, write, colour, indent, c)
+}
+
+func formatTypeName(t reflect.Type, v reflect.Value, colour Colourizer) string {
 	tn := ""
 	switch t.Kind() {
 	case reflect.Interface:
@@ -133,13 +209,10 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 	default:
 		tn = colour(t.String(), colourBlue)
 	}
+	return tn
+}
 
-	if len(name) > 0 {
-		write(indent("%s %s = ", depth), colour(name, colourYellow), tn)
-	} else {
-		write(indent("", depth))
-	}
-
+func formatValue(v reflect.Value, t reflect.Type, name string, write Writer, colour Colourizer, indent Indenter, c *Conf) {
 	switch v.Kind() {
 	case reflect.Bool:
 		write(colour("%v", colourGreen), v.Bool())
@@ -181,16 +254,16 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			return
 		}
 		write("[\n")
-		depth = depth + 1
-		if maxDepth > 0 && depth >= maxDepth {
-			write(indent(colour("... max depth reached\n", colourGrey), depth))
+		c.depth = c.depth + 1
+		if c.maxDepth > 0 && c.depth >= c.maxDepth {
+			write(indent(colour("... max depth reached\n", colourGrey), c.depth))
 		} else {
 			for i := 0; i < v.Len(); i++ {
-				dump(colour(fmt.Sprintf("%d", i), colourRed), v.Index(i), write, colour, indent, depth, maxDepth, maxLength)
+				dump(colour(fmt.Sprintf("%d", i), colourRed), v.Index(i), write, colour, indent, c)
 			}
 		}
-		depth = depth - 1
-		write(indent("]", depth))
+		c.depth = c.depth - 1
+		write(indent("]", c.depth))
 	case reflect.Chan:
 		if v.IsNil() {
 			write(colour("<nil>", colourGrey))
@@ -212,24 +285,24 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 				return
 			}
 			write("[\n")
-			depth = depth + 1
-			if maxDepth > 0 && depth >= maxDepth {
-				write(indent(colour("... max depth reached\n", colourGrey), depth))
+			c.depth = c.depth + 1
+			if c.maxDepth > 0 && c.depth >= c.maxDepth {
+				write(indent(colour("... max depth reached\n", colourGrey), c.depth))
 			} else {
 				keys := v.MapKeys()
 				sort.Sort(byValue(keys))
-				for _, k := range v.MapKeys() {
-					dump(fmt.Sprintf("%v", k), v.MapIndex(k), write, colour, indent, depth, maxDepth, maxLength)
+				for _, k := range keys {
+					dump(fmt.Sprintf("%v", k), v.MapIndex(k), write, colour, indent, c)
 				}
 			}
-			depth = depth - 1
-			write(indent("]", depth))
+			c.depth = c.depth - 1
+			write(indent("]", c.depth))
 		}
 	case reflect.String:
 		s := v.String()
 		slen := len(s)
-		if maxLength > 0 && slen > maxLength {
-			s = fmt.Sprintf("%s...", string([]byte(s)[0:maxLength]))
+		if c.maxLength > 0 && slen > c.maxLength {
+			s = fmt.Sprintf("%s...", string([]byte(s)[0:c.maxLength]))
 		}
 		write(colour("%q ", colourGreen), s)
 		write(colour("%d", colourGrey), slen)
@@ -239,42 +312,42 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 			return
 		}
 		write("{\n")
-		depth = depth + 1
-		if maxDepth > 0 && depth >= maxDepth {
-			write(indent(colour("... max depth reached\n", colourGrey), depth))
+		c.depth = c.depth + 1
+		if c.maxDepth > 0 && c.depth >= c.maxDepth {
+			write(indent(colour("... max depth reached\n", colourGrey), c.depth))
 		} else {
 			switch {
 			case !v.CanInterface():
-				write(indent(colour(fmt.Sprintf("... ???\n"), colourGrey), depth))
+				write(indent(colour(fmt.Sprintf("... ???\n"), colourGrey), c.depth))
 			case v.Type().Implements(grokkerType):
 				o := v.Interface().(Grokker)
-				write(indent(colour(fmt.Sprintf("... %s\n", o.Grok()), colourGrey), depth))
+				write(indent(colour(fmt.Sprintf("... %s\n", o.Grok()), colourGrey), c.depth))
 			case t.String() == "json.RawMessage":
 				o := v.Interface().(json.RawMessage)
-				write(indent(colour(fmt.Sprintf("... %s\n", string(o)), colourGrey), depth))
-			case depth > 1 && t.String() == "time.Time":
-				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), depth))
-			case depth > 1 && t.String() == "time.Location":
+				write(indent(colour(fmt.Sprintf("... %s\n", string(o)), colourGrey), c.depth))
+			case c.depth > 1 && t.String() == "time.Time":
+				write(indent(colour(fmt.Sprintf("... %v\n", v), colourGrey), c.depth))
+			case c.depth > 1 && t.String() == "time.Location":
 				s := "<nil>"
 				if v.CanAddr() && v.CanInterface() {
 					s = v.Addr().Interface().(*time.Location).String()
 				}
-				write(indent(colour(fmt.Sprintf("... %v\n", s), colourGrey), depth))
-			case depth > 1 && t.String() == "http.Request":
+				write(indent(colour(fmt.Sprintf("... %v\n", s), colourGrey), c.depth))
+			case c.depth > 1 && t.String() == "http.Request":
 				o := v.Interface().(http.Request)
-				write(indent(colour(fmt.Sprintf("... %s %s %d\n", coalesce(o.Method, "GET"), coalesce(o.RequestURI, "<request-uri>"), o.ContentLength), colourGrey), depth))
-			case depth > 1 && t.String() == "http.Response":
+				write(indent(colour(fmt.Sprintf("... %s %s %d\n", coalesce(o.Method, "GET"), coalesce(o.RequestURI, "<request-uri>"), o.ContentLength), colourGrey), c.depth))
+			case c.depth > 1 && t.String() == "http.Response":
 				o := v.Interface().(http.Response)
-				write(indent(colour(fmt.Sprintf("... %s %d\n", coalesce(o.Status, "<status-code> <status>"), o.ContentLength), colourGrey), depth))
+				write(indent(colour(fmt.Sprintf("... %s %d\n", coalesce(o.Status, "<status-code> <status>"), o.ContentLength), colourGrey), c.depth))
 			default:
 				for i := 0; i < v.NumField(); i++ {
-					dump(t.Field(i).Name, v.Field(i), write, colour, indent, depth, maxDepth, maxLength)
+					dump(t.Field(i).Name, v.Field(i), write, colour, indent, c)
 				}
 			}
 
 		}
-		depth = depth - 1
-		write(indent("}", depth))
+		c.depth = c.depth - 1
+		write(indent("}", c.depth))
 	case reflect.UnsafePointer:
 		write(colour("%v", colourGreen), v)
 	case reflect.Invalid:
