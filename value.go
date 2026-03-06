@@ -18,18 +18,6 @@ type Grokker interface {
 	Grok() string
 }
 
-type value struct {
-	Name        string
-	IsValid     bool
-	IsPointer   bool
-	IsInterface bool
-	Type        string
-	RValue      reflect.Value
-	RType       reflect.Type
-	Elem        any
-	Children    []value
-}
-
 // V aliases Value
 func V(value any, options ...Option) {
 	Value(value, options...)
@@ -117,14 +105,7 @@ func dump(name string, v reflect.Value, write Writer, colour Colourizer, indent 
 		}
 	}()
 
-	val := value{
-		Name:   name,
-		RValue: v,
-	}
-	_ = val // suppress unused warning
-
 	if !v.IsValid() {
-		val.Elem = "<invalid>"
 		write(indent("<invalid>\n", c.depth))
 		return
 	}
